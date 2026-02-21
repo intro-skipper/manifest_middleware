@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -15,6 +16,9 @@ func init() {
 	caddy.RegisterModule(ManifestRedirect{})
 	httpcaddyfile.RegisterHandlerDirective("manifest_redirect", parseCaddyfile)
 }
+
+// Default allowed versions
+var defaultAllowedVersions = []string{"10.8", "10.9", "10.10", "10.11"}
 
 // ManifestRedirect is a Caddy HTTP middleware that redirects based on User-Agent
 // to different manifest versions.
@@ -29,6 +33,8 @@ type ManifestRedirect struct {
 	ManifestPath string `json:"manifest_path,omitempty"`
 	// CommitHash is the initial Git commit hash for the CDN URL (can be updated via webhook)
 	CommitHash string `json:"commit_hash,omitempty"`
+	// AllowedVersions is the list of Jellyfin versions that have dedicated manifests
+	AllowedVersions []string `json:"allowed_versions,omitempty"`
 
 	// Compiled regex patterns
 	versionRegex  *regexp.Regexp
@@ -63,12 +69,20 @@ func (m *ManifestRedirect) Provision(ctx caddy.Context) error {
 		m.CommitHash = "d340f16ba1256ec563d7b08c0396645d555e65b8"
 	}
 
+	// Set default allowed versions if not configured
+	if len(m.AllowedVersions) == 0 {
+		m.AllowedVersions = defaultAllowedVersions
+	}
+
 	// Set initial commit hash in global manager
 	globalHashManager.SetCommitHash(m.CommitHash)
 
+	// Build version regex pattern from allowed versions
+	versionPattern := m.buildVersionPattern()
+
 	// Compile regex patterns
 	var err error
-	m.versionRegex, err = regexp.Compile(`^Jellyfin-Server/(10\.(?:8|9|10|11))\..*$`)
+	m.versionRegex, err = regexp.Compile(versionPattern)
 	if err != nil {
 		return fmt.Errorf("failed to compile version regex: %w", err)
 	}
@@ -84,6 +98,28 @@ func (m *ManifestRedirect) Provision(ctx caddy.Context) error {
 	}
 
 	return nil
+}
+
+// buildVersionPattern builds a regex pattern for matching allowed versions
+func (m *ManifestRedirect) buildVersionPattern() string {
+	// Build pattern like: ^Jellyfin-Server/(10\.(?:8|9|10|11))\..*$
+	// from allowed versions like: ["10.8", "10.9", "10.10", "10.11"]
+
+	var minorVersions []string
+	for _, v := range m.AllowedVersions {
+		// Extract minor version number (e.g., "8" from "10.8")
+		parts := strings.Split(v, ".")
+		if len(parts) >= 2 && parts[0] == "10" {
+			minorVersions = append(minorVersions, regexp.QuoteMeta(parts[1]))
+		}
+	}
+
+	if len(minorVersions) == 0 {
+		// Fallback to default if no valid versions
+		minorVersions = []string{"8", "9", "10", "11"}
+	}
+
+	return fmt.Sprintf(`^Jellyfin-Server/(10\.(?:%s))\..*$`, strings.Join(minorVersions, "|"))
 }
 
 // Validate ensures the configuration is valid
@@ -162,6 +198,10 @@ func (m *ManifestRedirect) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.ArgErr()
 				}
 				m.CommitHash = d.Val()
+			case "allowed_versions":
+				for d.NextArg() {
+					m.AllowedVersions = append(m.AllowedVersions, d.Val())
+				}
 			default:
 				return d.Errf("unrecognized subdirective: %s", d.Val())
 			}

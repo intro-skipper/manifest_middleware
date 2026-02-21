@@ -38,6 +38,17 @@ func TestManifestRedirectProvision(t *testing.T) {
 		t.Errorf("Expected default CommitHash, got %q", m.CommitHash)
 	}
 
+	// Check default allowed versions
+	if len(m.AllowedVersions) != 4 {
+		t.Errorf("Expected 4 default allowed versions, got %d", len(m.AllowedVersions))
+	}
+	expectedVersions := []string{"10.8", "10.9", "10.10", "10.11"}
+	for i, v := range expectedVersions {
+		if m.AllowedVersions[i] != v {
+			t.Errorf("Expected allowed version %q at index %d, got %q", v, i, m.AllowedVersions[i])
+		}
+	}
+
 	// Verify regexes are compiled
 	if m.versionRegex == nil {
 		t.Error("versionRegex should be compiled")
@@ -88,6 +99,53 @@ func TestManifestRedirectProvisionCustomValues(t *testing.T) {
 	// Verify global hash manager was updated
 	if globalHashManager.GetCommitHash() != "customhash123456789012345678901234567" {
 		t.Errorf("Global hash manager should have custom hash")
+	}
+}
+
+// TestManifestRedirectCustomAllowedVersions tests custom allowed versions
+func TestManifestRedirectCustomAllowedVersions(t *testing.T) {
+	// Reset global manager
+	globalHashManager = &CommitHashManager{}
+
+	m := &ManifestRedirect{
+		AllowedVersions: []string{"10.9", "10.10", "10.11"},
+	}
+
+	err := m.Provision(caddy.Context{})
+	if err != nil {
+		t.Errorf("Provision() error = %v", err)
+	}
+
+	// Check custom allowed versions are preserved
+	if len(m.AllowedVersions) != 3 {
+		t.Errorf("Expected 3 allowed versions, got %d", len(m.AllowedVersions))
+	}
+
+	// Test that only configured versions match
+	tests := []struct {
+		userAgent   string
+		shouldMatch bool
+		version     string
+	}{
+		{"Jellyfin-Server/10.8.0", false, ""},      // Not in allowed list
+		{"Jellyfin-Server/10.9.0", true, "10.9"},   // In allowed list
+		{"Jellyfin-Server/10.10.0", true, "10.10"}, // In allowed list
+		{"Jellyfin-Server/10.11.0", true, "10.11"}, // In allowed list
+	}
+
+	for _, tt := range tests {
+		matches := m.versionRegex.FindStringSubmatch(tt.userAgent)
+		if tt.shouldMatch {
+			if matches == nil {
+				t.Errorf("Expected %q to match version regex", tt.userAgent)
+			} else if matches[1] != tt.version {
+				t.Errorf("Expected version %q, got %q", tt.version, matches[1])
+			}
+		} else {
+			if matches != nil {
+				t.Errorf("Expected %q to NOT match version regex, but got %v", tt.userAgent, matches)
+			}
+		}
 	}
 }
 
