@@ -1,0 +1,81 @@
+# Caddyfile with manifest_redirect middleware and webhook support
+# Build with xcaddy:
+# xcaddy build --with github.com/intro-skipper/manifest_middleware
+
+{
+    # Middleware must execute before redir
+    order manifest_redirect before redir
+    order manifest_webhook before redir
+}
+
+*.intro-skipper.org intro-skipper.org {
+    tls {
+        dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+    }
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 100mb
+            roll_keep 10
+            roll_keep_for 1d
+        }
+        format filter {
+            wrap json
+            fields {
+                request>remote_addr delete
+                request>remote_ip delete
+                request>client_ip delete
+            }
+        }
+    }
+
+    # Discord redirect
+    @discord host discord.intro-skipper.org
+    redir @discord https://discord.gg/AYZ7RJ3BuA 308
+
+    # GitHub webhook handler for dynamic commit hash updates
+    # This handler receives GitHub push events and updates the commit hash
+    # On startup, it checks if the local hash matches the remote head
+    manifest_webhook {
+        github_secret {$GITHUB_SECRET}
+        discord_url {$DISCORD_WEBHOOK_URL}
+        location "Production"
+        allowed_repos intro-skipper/manifest
+        github_branch main
+        webhook_path /hook
+        
+        # Caddyfile path for persistence (writes new hash back to file)
+        caddyfile /etc/caddy/Caddyfile
+        
+        # GitHub repository for startup check
+        github_owner intro-skipper
+        github_repo manifest
+        github_token {$GITHUB_TOKEN}
+    }
+
+    # GitHub hosts - only accessible for webhook
+    @github host ams.intro-skipper.org fra.intro-skipper.org
+    handle @github {
+        @blocked {
+            not path /hook
+        }
+        abort @blocked
+    }
+
+    # Manifest Redirect Middleware
+    # This middleware handles User-Agent based redirection
+    # The commit hash can be dynamically updated via webhook
+    manifest_redirect {
+        base_url https://cdn.jsdelivr.net/gh/intro-skipper/manifest
+        default_version 10.11
+        github_url https://github.com/intro-skipper/
+        manifest_path /manifest.json
+        commit_hash d340f16ba1256ec563d7b08c0396645d555e65b8
+    }
+
+    # Fallback for other paths (not /manifest.json)
+    @notManifest {
+        not host fra.intro-skipper.org ams.intro-skipper.org
+        not path /manifest.json
+    }
+    redir @notManifest https://github.com/intro-skipper/ 308
+}
